@@ -1,115 +1,116 @@
 /**
- * @FileName ajax.m.js
+ * @FileName ajax
  * @Synopsis ajax封装
  * @author ployer900, <yuhongliang900@163.com>
  * @Version 0.0.1
  * @date 2017-09-25
  */
 
-//默认设置选项
-var ajaxSettings = {
+// error
+function AjaxError(message) {
+  this.name = 'MtAjaxError';
+  this.message = message;
+}
+AjaxError.prototype = Object.create(Error.prototype);
+AjaxError.prototype.constructor = AjaxError;
+
+// default settings
+const ajaxSettings = {
   type: 'GET',
   url: window.location.toString(),
   data: null,
+  processData: true,
   contentType: 'application/x-www-form-urlencoded',
   mimeType: '',
   dataType: '',
   jsonp: 'callback',
-  jsonpCallback: '',
+  jsonpCallback: 'jsonp',
   timeout: 0,
-  headers: '',
-  context: window
+  headers: null,
+  async: true,
+  global: true,
+  context: window,
+  traditional: false,
+  cache: true,
+  xhrFields: null
 };
 
-//请求标识
-var jsonpID = (() => {
-  var id = 1;
-  return () => {
-    return id++;
-  }
-})();
-
-//合并对象
-var merge = (target, source) => {
-  for (var key in source) {
-    if (source.hasOwnProperty(key)) {
-      if (target[key] === undefined) target[key] = source[key];
+// util tool
+let util = {
+  merge: (target, source) => {
+    for (var key in source) {
+      if (source.hasOwnProperty(key)) {
+        target[key] = source[key];
+      }
     }
-  }
-  return target;
+    return target;
+  },
+  isFunction: (args) => typeof args === 'function',
+  isObject: (args) => Object.prototype.toString.call(args) === '[object Object]',
+  // TODO: using zepto lib serialize method instance of
+  serialize: (data) => Object.keys(data).map((key, index) => ( key + '=' + data[key] )).join('&')
 };
 
-//函数判断
-var isFunction = (func) => {
-  return typeof func === 'function';
-};
+// callback index
+let count = 1;
 
-//序列化
-var serialize = (data) => {
-
-};
-
-//数据处理
-var handleResponse = (response) => {
-  const { type } = response;
-  if (type === 'error' || type === 'timeout') {
-
-    console.log(response.options);
-
-    //添加灵犀打点上报异常
-    var e = new Error(type);
-    throw e;
+/**
+ * jsonp
+ * @param  {Object} [options={}] [options]
+ * @return {[type]}              [undefined]
+ */
+export const jsonp = (options = {}) => {
+  if (!util.isObject(options)) {
+    throw new AjaxError('parameter in jsonp method must be object');
     return;
   }
+  let settings = util.merge({}, options);
+  for (let key in ajaxSettings) {
+    if (settings[key] === undefined) settings[key] = ajaxSettings[key];
+  }
+  let { url, jsonp, jsonpCallback, timeout, processData, cache, data } = settings;
+  let script = null;
+  let timer = null;
+  let target = document.head;
+  let id = jsonpCallback + (count++);
 
-  return response.data;
-}
+  // backup already existed global callback
+  let originalCallback = window[id];
+  let cleanup = () => {
+    if (script.parentNode) script.parentNode.removeChild(script);
+    try {
+      delete window[id];
+    } catch(e) {
+      window[id] = null;
+    }
+    if (timer) clearTimeout(timer);
+  };
 
-//jsonp
-export var jsonp = (options) => {
-  merge(options, ajaxSettings);
-  var _callbackName = options.jsonpCallback;
-  var callbackName = (isFunction(_callbackName) ?
-      _callbackName() : _callbackName) || ('jsonp' + jsonpID());
-  var script = document.createElement('script');
-  var originalCallback = window[callbackName];
-  var responseData;
-  var abortTimeout;
+  if (data && processData) url = url + '?' + serialize(data);
+  if (cache) url += '&_=' + (+new Date());
 
-  //覆写全局回调函数
-  window[callbackName] = function() { responseData = arguments; };
-
+  // return promise
   return new Promise((resolve, reject) => {
-    var loadSuccess = () => {
-      abortTimeout && clearTimeout(abortTimeout);
-      script.removeEventListener('load', loadSuccess, false);
-      script.removeEventListener('error', loadError, false);
-      script.parentNode && script.parentNode.removeChild(script);
-      window[callbackName] = originalCallback;
-      if (responseData && isFunction(originalCallback)) {
-        originalCallback(responseData[0]);
-      }
-      resolve({type: 'success', data: responseData[0]});
-      //释放空间
-      originalCallback = responseData = undefined;
+    window[id] = (data) => {
+      cleanup();
+      if (util.isFunction(originalCallback)) originalCallback(data);
+      resolve(data);
     };
-    var loadError = (e) => {
-      abortTimeout && clearTimeout(abortTimeout);
-      resolve({ type: 'error', options: options });
-    };
-    script.addEventListener('load', loadSuccess, false);
-    script.addEventListener('error', loadError, false);
+    if (timeout) {
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timeout.'));
+      }, timeout);
+    }
 
-    //如果配置了timeout值，则设置超时定时器
-    if (options.timeout > 0) abortTimeout = setTimeout(function() {
-      resolve({ type: 'timeout', options: options });
-    }, options.timeout);
+    // add qs component
+    url += (~url.indexOf('?') ? '&' : '?') + jsonp + '=' + encodeURIComponent(id);
+		url = url.replace('?&', '?');
 
-    script.src = options.url.replace(/\?(.+)=\?/, '?$1=' + callbackName);
-    document.head.appendChild(script);
+    // create script
+    script = document.createElement('script');
+    script.src = url;
+    script.onerror = () => reject(new Error('Script loading error.'));
+    target.appendChild(script);
   });
-};
-
-export var ajaxJSONP = (options) => {
-  return jsonp(options).then(handleResponse);
 }
